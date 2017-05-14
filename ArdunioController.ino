@@ -598,11 +598,7 @@ void mode_start_heating()
 	set_relay(PIN_RELAY_1_WATER_PUMP, true);
 	set_relay(PIN_RELAY_2_HEATER, param_water_heater_status);
 	set_relay(PIN_RELAY_4_VALVE, true);
-  //Do not use Fan when outside hot enough
-  if(get_temperature_digital(PIN_TEMPERATURE_OUTSIDE) < 15.0)
-  {
-	  set_relay(PIN_RELAY_3_FAN, true);
-  }
+  set_relay(PIN_RELAY_3_FAN, true);  
 	set_relay(PIN_RELAY_5_COMPRESSOR, true);
 }
 
@@ -1151,10 +1147,13 @@ void loop() {
 	{
 		if (param_mode != MODE_NONE)
 		{
+      mode_stop();
+    
 			write_log("FUSE BLOWN");
-			save_params();
-
-			mode_stop();
+      char tmp[100];
+      sprintf(tmp, "high:%d low:%d liner:%d", value_pin_high_pressure, value_pin_low_pressure, value_pin_pressure_liner);
+      write_log(tmp);
+			save_params();			
 		}
 	}
 
