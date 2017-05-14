@@ -67,9 +67,9 @@ const String MODE_NONE = "none";
 const String MODE_HEATING = "heating";
 const String MODE_DEFROST = "defrost";
 
-const float MAX_TEMP = 52.0f;
-const float MIN_TEMP = 37.0f;
-const float TEMP_COEF_PLUS_MINUS = -0.5f; //Adaptive heating temperature
+const float MAX_TEMP = 55.0f;
+const float MIN_TEMP = 45.0f;
+const float TEMP_COEF_PLUS_MINUS = -0.3f; //Adaptive heating temperature
 const float TEMP_THERESHOLD_DROP = 7.0f; //At which start to heat again
 
 const int TIME_SECONDS_WARMUP = 30;
@@ -81,8 +81,8 @@ int soft_wdt = 0;
 int heart_beat = LOW;
 
 float setting_temperature = 49.0f;
-float setting_temperature_buffer = 5.0f;
-float setting_time_between_heating = 60.0f * 15.0f; // 20
+float setting_temperature_buffer = 3.0f;
+float setting_time_between_heating = 60.0f * 7.0f; // 20
 float setting_time_between_defrost = 60.0f * 30.0f; //120
 float setting_time_min_defrost = 60.0f * 2.0f;
 
@@ -116,6 +116,8 @@ bool param_relay_4 = false;
 bool param_relay_5 = false;
 
 bool param_is_started = false;
+
+int param_temperature_fuse_blown_counter = 0;
 
 volatile long param_rtc_simulation = 0; // 90648
 int _temp_rtc_counter = 0;
@@ -596,7 +598,11 @@ void mode_start_heating()
 	set_relay(PIN_RELAY_1_WATER_PUMP, true);
 	set_relay(PIN_RELAY_2_HEATER, param_water_heater_status);
 	set_relay(PIN_RELAY_4_VALVE, true);
-	set_relay(PIN_RELAY_3_FAN, true);
+  //Do not use Fan when outside hot enough
+  if(get_temperature_digital(PIN_TEMPERATURE_OUTSIDE) < 15.0)
+  {
+	  set_relay(PIN_RELAY_3_FAN, true);
+  }
 	set_relay(PIN_RELAY_5_COMPRESSOR, true);
 }
 
@@ -605,12 +611,12 @@ void mode_stop_heating()
 	param_mode = MODE_NONE;
 	write_log("mode: stop heating");
 
+  param_time_last_heating_stop = get_secondstime();
+
 	set_relay(PIN_RELAY_5_COMPRESSOR, false);
 	set_relay(PIN_RELAY_1_WATER_PUMP, true);
-	set_relay(PIN_RELAY_2_HEATER, param_water_heater_status);	
-	delay_safe(10000);
-	set_relay(PIN_RELAY_4_VALVE, true);
-	delay_safe(10000);
+	set_relay(PIN_RELAY_2_HEATER, param_water_heater_status);		
+	set_relay(PIN_RELAY_4_VALVE, true);	
 	set_relay(PIN_RELAY_3_FAN, false);
 }
 
@@ -791,8 +797,8 @@ void setup() {
 		
 	write_log("RESTART FINISHED");
 	
-	Timer3.initialize(500000);         // initialize timer1, and set a 1/2 second period
 	//http://astro.neutral.org/arduino/arduino-pwm-pins-frequency.shtml
+	Timer3.initialize(500000);         // initialize timer1, and set a 1/2 second period	
 	Timer3.pwm(PIN_TIMER_3, 512);                // setup pwm on pin 9, 50% duty cycle
 	Timer3.attachInterrupt(timer_callback);  // attaches callback() as a timer overflow interrupt
 
@@ -823,6 +829,22 @@ void loop() {
 	digitalWrite(LED_BUILTIN, heart_beat);
 
 	long secondstime = get_secondstime();
+
+	if(param_temperature_fuse_blown_counter > 30)
+	{
+		//20 sec of abnormal temperature
+		//Shutdown everything
+		delay(1000);
+		return;
+	}
+
+	
+	//Adaptive temperature
+	//setting_temperature @ 0 deg
+	float target_temperature = setting_temperature + get_temperature_digital(PIN_TEMPERATURE_OUTSIDE) * TEMP_COEF_PLUS_MINUS; //coef
+	if (target_temperature < MIN_TEMP) target_temperature = MIN_TEMP;
+	if (target_temperature > MAX_TEMP) target_temperature = MAX_TEMP - 1.5f;
+
 
 	if (Serial.available() > 0) {
 		String query = Serial.readString();
@@ -883,6 +905,36 @@ void loop() {
 		{
 			load_params();
 			output_params();
+		}
+    else if(msg == "erase")
+    {
+      File root = SD.open("/");
+      while (true) {
+        root.rewindDirectory();
+        File entry =  root.openNextFile();        
+        if (! entry) {
+          // no more files
+          break;
+        }
+
+        Serial.println(entry.name());
+
+        if (entry.isDirectory()) {
+          SD.rmdir(entry.name());
+
+        }
+        else
+        {
+          SD.remove(entry.name());
+        }
+
+        wdt_reset();
+      }
+    }
+		else if(msg == F("target_temperature"))
+		{
+			Serial.print(F("target_temperature ="));
+			Serial.println(target_temperature);
 		}
 		else if(msg == F("free_memory"))
 		{
@@ -1024,12 +1076,6 @@ void loop() {
 	int value_pin_low_pressure = digitalRead(PIN_SWITCH_LOW_PRESSURE);
 	int value_pin_pressure_liner = digitalRead(PIN_SWITCH_PRESSURE_LINER);
 
-	//Adaptive temperature
-	//setting_temperature @ 0 deg
-	float target_temperature = setting_temperature + get_temperature_digital(PIN_TEMPERATURE_OUTSIDE) * TEMP_COEF_PLUS_MINUS; //coef
-	if (target_temperature < MIN_TEMP) target_temperature = MIN_TEMP;
-	if (target_temperature > MAX_TEMP) target_temperature = MAX_TEMP;
-
 
 	if (target_temperature > 0  &&
 		(secondstime - param_time_startup) > TIME_SECONDS_WARMUP &&
@@ -1043,6 +1089,7 @@ void loop() {
 			if (param_is_force_defrost ||
 				(secondstime - param_time_last_heating_stop > setting_time_between_heating * 0.5 &&
 					secondstime - param_time_last_defrost > setting_time_between_defrost
+					&& get_temperature_digital(PIN_TEMPERATURE_OUTSIDE) < 5.0 // Not warm enough outside
 					&& analogRead(PIN_SNOW_SENSOR) < SNOW_SENSOR_RADIATOR_FROZEN)) //Frozen radiator
 			{
 				param_is_force_defrost = false;
@@ -1055,7 +1102,7 @@ void loop() {
 			{
 				if (param_is_force_start_heating ||
 					(secondstime - param_time_last_heating_stop > setting_time_between_heating && //No sooner than 10 min
-					get_temperature_analog(PIN_A_TEMPERATURE_WATER_IN) < target_temperature - TEMP_THERESHOLD_DROP))
+					get_temperature_analog(PIN_A_TEMPERATURE_WATER_OUT) < target_temperature - TEMP_THERESHOLD_DROP))
 				{
 					param_is_force_start_heating = false;
 
@@ -1076,15 +1123,14 @@ void loop() {
 		{
 			if (param_mode == MODE_HEATING)
 			{
-				if ((secondstime - param_time_last_heating > 60 * 5 && //Not shorter than 5min
-					get_temperature_analog(PIN_A_TEMPERATURE_WATER_IN) >= target_temperature) ||
-					get_temperature_analog(PIN_A_TEMPERATURE_WATER_IN) >= target_temperature + 15.0f || //Fuse
-					get_temperature_analog(PIN_A_TEMPERATURE_WATER_OUT) >= target_temperature + 15.0f || //Fuse
+				if ((secondstime - param_time_last_heating > 60 * 3 && //Not shorter than 3min
+					get_temperature_analog(PIN_A_TEMPERATURE_WATER_IN) >= target_temperature + setting_temperature_buffer) ||
+					get_temperature_analog(PIN_A_TEMPERATURE_WATER_IN) >= MAX_TEMP || //Fuse
+					get_temperature_analog(PIN_A_TEMPERATURE_WATER_OUT) >= MAX_TEMP || //Fuse
 					secondstime - param_time_last_heating >= 60 * 20 || //Not longer than 20min
 					param_is_force_stop_heating) 
 				{
-					param_is_force_stop_heating = false;
-					param_time_last_heating_stop = secondstime;
+					param_is_force_stop_heating = false;					
 					save_params();
 
 					mode_stop_heating();
@@ -1117,6 +1163,28 @@ void loop() {
 		log_sensors();
 		param_time_last_log = secondstime;
 	}
+
+	if(get_temperature_analog(PIN_A_TEMPERATURE_WATER_IN) >= MAX_TEMP + 10.0f || //Fuse
+		get_temperature_analog(PIN_A_TEMPERATURE_WATER_OUT) >= MAX_TEMP + 10.0f)
+	{
+		param_temperature_fuse_blown_counter++;
+
+		char tmp[100];
+		sprintf(tmp,
+			"abnormal temperature:%s ; %s\0",
+			float_to_string(get_temperature_analog(PIN_A_TEMPERATURE_WATER_IN)), 
+			float_to_string(get_temperature_analog(PIN_A_TEMPERATURE_WATER_OUT)));
+		write_log(tmp);
+
+    if(param_temperature_fuse_blown_counter > 5)
+    {
+		  mode_stop();
+    }
+	}
+  else
+  {
+    param_temperature_fuse_blown_counter = 0;
+  }
 
 
 	delay_safe(1000);
