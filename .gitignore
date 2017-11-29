@@ -1,3 +1,7 @@
 /ArdunioController.vcxproj
 /ArdunioController.vcxproj.filters
 /ArdunioController.vcxproj.user
+.pioenvs
+.piolibdeps
+.clang_complete
+.gcc-flags.json

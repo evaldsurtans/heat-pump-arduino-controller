@@ -67,22 +67,23 @@ const String MODE_NONE = "none";
 const String MODE_HEATING = "heating";
 const String MODE_DEFROST = "defrost";
 
-const float MAX_TEMP = 55.0f;
-const float MIN_TEMP = 45.0f;
+const float MAX_TEMP = 54.0f;
+const float MIN_TEMP = 47.0f;
 const float TEMP_COEF_PLUS_MINUS = -0.3f; //Adaptive heating temperature
 const float TEMP_THERESHOLD_DROP = 7.0f; //At which start to heat again
 
 const int TIME_SECONDS_WARMUP = 30;
 
-const int SNOW_SENSOR_RADIATOR_FROZEN = 500; //550
-const int SNOW_SENSOR_RADIATOR_CLEAN = 800; // 840;
+// Snow sensor is located in between pipes in radiator, so it actually checks if ice is not blocking view through radiator
+const int SNOW_SENSOR_RADIATOR_FROZEN = 690; //550
+const int SNOW_SENSOR_RADIATOR_CLEAN = 900; // 840; 750?
 
 int soft_wdt = 0;
 int heart_beat = LOW;
 
 float setting_temperature = 49.0f;
 float setting_temperature_buffer = 3.0f;
-float setting_time_between_heating = 60.0f * 7.0f; // 20
+float setting_time_between_heating = 60.0f * 5.0f; // 20  in summer 2min
 float setting_time_between_defrost = 60.0f * 30.0f; //120
 float setting_time_min_defrost = 60.0f * 2.0f;
 
@@ -598,9 +599,16 @@ void mode_start_heating()
 	set_relay(PIN_RELAY_1_WATER_PUMP, true);
 	set_relay(PIN_RELAY_2_HEATER, param_water_heater_status);
 	set_relay(PIN_RELAY_4_VALVE, true);
-  set_relay(PIN_RELAY_3_FAN, true);  
+
+  // Summer mode
+  if(get_temperature_digital(PIN_TEMPERATURE_OUTSIDE) < 10.0f)
+  {
+    set_relay(PIN_RELAY_3_FAN, true);  
+  }
+  
 	set_relay(PIN_RELAY_5_COMPRESSOR, true);
 }
+
 
 void mode_stop_heating()
 {
@@ -953,9 +961,14 @@ void loop() {
 		}
 		else if (msg == F("setting_time_between_heating"))
 		{
-			setting_time_between_heating = atol((param.c_str()));
+			setting_time_between_heating = param.toFloat();
 			Serial.println(F("setting_time_between_heating SET"));
 		}
+   else if (msg == F("setting_time_min_defrost"))
+   {
+      setting_time_min_defrost = param.toFloat();
+      Serial.println(F("setting_time_min_defrost SET"));
+    }
 		else if (msg == F("OUTPUT"))
 		{
 			setting_is_output_log = (param == F("ON"));
@@ -1131,6 +1144,18 @@ void loop() {
 
 					mode_stop_heating();
 				}
+        else
+        {
+          //while heating
+          //Summer mode, turn on FAN when evaporator coolded
+          // FAN not ON
+          if(!param_relay_3 && 
+              get_temperature_analog(PIN_A_TEMPERATURE_EVAPORATOR) < get_temperature_analog(PIN_A_TEMPERATURE_OUTSIDE) - 6.0f &&
+              get_temperature_digital(PIN_TEMPERATURE_OUTSIDE) < 15.0f) //Over this temperature it will evoparate very fast
+          {
+              set_relay(PIN_RELAY_3_FAN, true); 
+          }
+        }
 			}
 			else if (param_mode == MODE_DEFROST)
 			{
